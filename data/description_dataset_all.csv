@@ -1,0 +1,39 @@
+﻿Variable;Unidad;Descripción
+hidraulica;GWh;Energía generada mediante el aprovechamiento de agua en embalses y ríos.
+nuclear;GWh;Energía producida por fisión nuclear en las centrales nucleares.
+carbon;GWh;Electricidad generada a partir de la combustión de carbón.
+fuel_gas;GWh;Producción mediante centrales térmicas que usan fuelóleo o gas natural en ciclo simple.
+ciclo_combinado;GWh;Generación en centrales de gas natural con turbinas combinadas (gas y vapor).
+eolica;GWh;Energía generada por aerogeneradores que transforman la fuerza del viento.
+solar_fotovoltaica;GWh;Electricidad obtenida directamente de la radiación solar mediante paneles fotovoltaicos.
+solar_termica;GWh;Electricidad producida a partir de energía solar concentrada (espejos o torres solares).
+otras_renovables;GWh;Incluye fuentes renovables menores (biogás, geotermia, marina).
+cogeneracion;GWh;Producción simultánea de electricidad y calor útil en procesos industriales.
+residuos_no_renovables;GWh;Energía obtenida de residuos urbanos o industriales de origen fósil.
+residuos_renovables;GWh;Energía obtenida de la fracción biodegradable de residuos.
+generacion_total;GWh;Suma de toda la energía generada por las tecnologías en el sistema peninsular.
+alimentos_bebidas_no_alcoholicas;porcentaje;Mide la variación de precios en productos alimentarios y bebidas sin alcohol. Incluye pan, carne, pescado, frutas, verduras, leche, café, agua embotellada, etc. Refleja la evolución de los precios básicos de consumo cotidiano.
+bebidas_alcoholicas_tabaco;porcentaje;Incluye bebidas alcohólicas (vino, cerveza, licores) y productos de tabaco. Sus precios suelen estar influenciados por impuestos especiales y políticas fiscales.
+vestido_calzado;porcentaje;Agrupa prendas de vestir, calzado y sus reparaciones. Presenta estacionalidad marcada por rebajas y campañas de moda.
+vivienda_agua_electricidad_gas;porcentaje;Refleja el coste de la vivienda y los servicios relacionados: alquiler, suministro de agua, electricidad, gas natural y combustibles domésticos. Este grupo es altamente sensible a los precios energéticos y constituye uno de los principales motores de la inflación.
+muebles_articulos_hogar;porcentaje;Incluye muebles, electrodomésticos, utensilios y servicios de mantenimiento doméstico. Representa el gasto en equipamiento y mantenimiento del hogar.
+sanidad;porcentaje;Precios de productos farmacéuticos, servicios médicos, dentales y hospitalarios. Su variación suele ser moderada debido a la regulación del sector sanitario.
+transporte;porcentaje;Evolución de los precios del transporte privado y público: carburantes, vehículos, billetes de avión, tren o autobús. Es un grupo muy afectado por los precios internacionales del petróleo.
+comunicaciones;porcentaje;Coste de servicios de telecomunicaciones (telefonía fija y móvil, internet, equipos de comunicación). En los últimos años, muestra baja inflación o incluso deflación por la competencia del sector.
+ocio_cultura;porcentaje;Agrupa bienes y servicios culturales y recreativos: libros, prensa, equipos informáticos, servicios audiovisuales, viajes organizados, etc.
+ensenanza;porcentaje;Mide la variación en los precios de la educación pública y privada, incluyendo enseñanza infantil, primaria, secundaria, universitaria y formación continua.
+restaurantes_hoteles;porcentaje;Refleja el comportamiento de los precios en restauración (bares, cafeterías, restaurantes) y alojamiento hotelero. Es sensible a la actividad turística y a la evolución de los costes laborales.
+otros;porcentaje;Incluye productos y servicios personales no clasificados en otros grupos: seguros, peluquería, cuidado personal, joyería, artículos de aseo, etc.
+ipc_general;porcentaje;Índice de Precios de Consumo (IPC) general. Representa la inflación total, agregando todos los grupos ponderados según su peso en la cesta de consumo de los hogares. Es el indicador principal de la inflación en España.
+bienes_consumo;porcentaje;Agrupa los productos finales fabricados para el consumo directo de los hogares. Incluye tanto bienes duraderos (electrodomésticos, muebles) como no duraderos (alimentos, productos de limpieza, textil).
+bienes_consumo_duradero;porcentaje;Productos con larga vida útil, como vehículos, muebles o electrodomésticos. Su producción depende del ciclo económico y de la demanda de inversión familiar.
+bienes_consumo_noduradero;porcentaje;Bienes de consumo inmediato, como alimentos, bebidas o productos de higiene.
+bienes_equipo;porcentaje;Maquinaria, equipos eléctricos, vehículos, material de transporte. Representan la inversión productiva.
+bienes_intermedios;porcentaje;Productos utilizados como insumos en otros procesos industriales (química, metalurgia, papel, materiales de construcción).
+energia;porcentaje;Incluye electricidad, gas, vapor, aire acondicionado, refino de petróleo y otras actividades energéticas. Es el componente más volátil del índice.
+ipri_total;porcentaje;Índice global de precios industriales que abarca todos los sectores.
+ipri_total_sinenergia;porcentaje;Índice general excluyendo el componente energético. Permite observar la evolución de los precios industriales estructurales, sin la volatilidad del sector energético.
+energia_final_mwh;MWh;Energía total final demandada en el sistema eléctrico peninsular (en MWh).
+mercado_diario_eur_mwh;€/MWh;Precio medio mensual del mercado diario de electricidad (euros por MWh).
+mercado_intradiario_eur_mwh;€/MWh;Precio medio mensual del mercado intradiario de electricidad (euros por MWh).
+precio_total_eur_mwh;€/MWh;Precio total medio mensual resultante de la suma de los componentes del mercado eléctrico (euros por MWh).

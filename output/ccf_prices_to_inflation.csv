@@ -1,0 +1,10 @@
+target,price,best_lag,best_ccf
+ipc_general,mercado_diario_eur_mwh,11,0.1759160613389184
+ipc_general,mercado_intradiario_eur_mwh,-2,-0.6943847119906399
+ipc_general,precio_total_eur_mwh,11,0.20424230911540164
+vivienda_agua_electricidad_gas,mercado_diario_eur_mwh,11,0.22868488225396172
+vivienda_agua_electricidad_gas,mercado_intradiario_eur_mwh,-6,-0.495213841991448
+vivienda_agua_electricidad_gas,precio_total_eur_mwh,11,0.26610102294280763
+ipri_total,mercado_diario_eur_mwh,11,0.21481989955102984
+ipri_total,mercado_intradiario_eur_mwh,-6,-0.6054083446383209
+ipri_total,precio_total_eur_mwh,11,0.2519528560239341

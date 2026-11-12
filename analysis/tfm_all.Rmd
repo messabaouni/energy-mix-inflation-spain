@@ -1,0 +1,1667 @@
+---
+title: "TFM_All"
+author: "Mohammed Essabaouni"
+date: "2025-12-03"
+output: html_document
+---
+
+```{r}
+# Desactivar mensajes y warnings globalmente
+options(
+  warn = -1,                # Oculta warnings
+  message = FALSE,          # Oculta mensajes
+  warning = FALSE           # Oculta warnings (knitr)
+)
+
+# También para knitr
+knitr::opts_chunk$set(
+  warning = FALSE,
+  message = FALSE,
+  results = "hold"
+)
+```
+
+
+```{r warning=FALSE, include=FALSE}
+#Librerias
+library(readr)
+library(lubridate)
+library(janitor)
+library(zoo)
+library(urca)
+library(vars)
+library(ggplot2)
+library(GGally)
+library(tidyr)
+library(patchwork)
+library(scales)
+library(Metrics)
+library(dplyr)
+library(caret)
+library(parallel)
+library(doParallel)
+library(iml)
+library(stringr)
+
+```
+
+#Preparar los datos
+```{r warning=FALSE}
+data_raw <- read_delim(
+  "../data/data.csv",
+  delim = ";",
+  escape_double = FALSE,
+  col_types = cols(fecha = col_date("%d/%m/%Y")),
+  trim_ws = TRUE
+)
+
+data <- data_raw |>
+  clean_names() |>
+  mutate(
+    year = year(fecha),
+    month = month(fecha),
+    month_factor = factor(month, levels = 1:12, labels = month.abb)
+  )
+
+tecnologias <- c(
+  "hidraulica","nuclear","carbon","fuel_gas","ciclo_combinado",
+  "eolica","solar_fotovoltaica","solar_termica","otras_renovables",
+  "cogeneracion","residuos_no_renovables","residuos_renovables"
+)
+
+stopifnot(all(tecnologias %in% names(data)))
+stopifnot("generacion_total" %in% names(data))
+
+for (tec in tecnologias) {
+  data[[paste0("share_", tec)]] <- data[[tec]] / data$generacion_total
+}
+
+renovables <- c(
+  "hidraulica","eolica","solar_fotovoltaica","solar_termica",
+  "otras_renovables","residuos_renovables"
+)
+
+fosiles <- c("carbon","fuel_gas","ciclo_combinado")
+
+data <- data |>
+  dplyr::mutate(
+    share_renovables = rowSums(across(paste0("share_", renovables))),
+    share_fosiles = rowSums(across(paste0("share_", fosiles)))
+  )
+
+stopifnot(all(c(
+  "mercado_diario_eur_mwh",
+  "mercado_intradiario_eur_mwh",
+  "precio_total_eur_mwh"
+) %in% names(data)))
+
+data <- data |>
+  mutate(
+    log_mercado_diario_eur_mwh = log(mercado_diario_eur_mwh),
+    log_mercado_intradiario_eur_mwh = log(mercado_intradiario_eur_mwh),
+    log_precio_total_eur_mwh = log(precio_total_eur_mwh),
+    log_precio_gas_eur_mwh = log(precio_gas_natural_mwh)
+  )
+
+max_lag <- 12
+
+data <- data |>
+  mutate(
+    crisis_gas = if_else(fecha >= ymd("2021-03-01") & fecha <= ymd("2023-05-31"), 1L, 0L),
+    guerra_ucrania = if_else(fecha >= ymd("2022-02-01"), 1L, 0L),
+    excepcion_iberica = if_else(fecha >= ymd("2022-06-01") & fecha <= ymd("2023-12-31"), 1L, 0L),
+    covid = if_else(fecha >= ymd("2020-01-01") & fecha <= ymd("2022-05-01"), 1L, 0L)
+  )
+
+for (L in 1:max_lag) {
+  data[[paste0("log_precio_total_lag", L)]] <- lag(data$log_precio_total_eur_mwh, L)
+  data[[paste0("log_precio_gas_lag", L)]] <- lag(data$log_precio_gas_eur_mwh, L)
+  data[[paste0("share_renovables_lag", L)]] <- lag(data$share_renovables, L)
+  data[[paste0("share_fosiles_lag", L)]] <- lag(data$share_fosiles, L)
+}
+
+data <- data |>
+  arrange(fecha) |>
+  mutate(
+    ma3_log_precio_total = rollmean(log_precio_total_eur_mwh, 3, fill = NA, align = "right"),
+    ma6_log_precio_total = rollmean(log_precio_total_eur_mwh, 6, fill = NA, align = "right"),
+    ma12_log_precio_total = rollmean(log_precio_total_eur_mwh, 12, fill = NA, align = "right")
+  )
+
+```
+
+#EDA
+```{r}
+
+plot_ts <- function(data, var, title, ylab) {
+  ggplot(data, aes(x = fecha, y = .data[[var]])) +
+    geom_line(color = "steelblue") +
+    labs(title = title, x = "Fecha", y = ylab) +
+    theme_minimal()
+}
+
+add_event_bands <- function() {
+  list(
+    annotate("rect",
+      xmin = as.Date("2020-01-01"), xmax = as.Date("2022-05-01"),
+      ymin = -Inf, ymax = Inf, alpha = 0.08, fill = "grey50"
+    ),
+    annotate("rect",
+      xmin = as.Date("2022-06-01"), xmax = as.Date("2023-12-31"),
+      ymin = -Inf, ymax = Inf, alpha = 0.10, fill = "blue"
+    ),
+    geom_vline(
+      xintercept = as.Date("2022-02-01"),
+      linetype = "dashed", color = "black", linewidth = 0.7
+    )
+  )
+}
+
+ggplot(data, aes(x = fecha, y = ipc_general)) +
+  add_event_bands() +
+  geom_line(color = "firebrick", linewidth = 0.8) +
+  scale_x_date(date_breaks = "2 years", date_labels = "%Y") +
+  labs(
+    title = "Evolución del IPC general en España (2010–2024)",
+    subtitle = "Con eventos: COVID, crisis del gas, guerra de Ucrania y excepción ibérica",
+    x = "Fecha", y = "IPC general (%)"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold", hjust = 0.5))
+
+ggplot(data, aes(x = fecha, y = precio_total_eur_mwh)) +
+  add_event_bands() +
+  geom_line(color = "darkorange3", linewidth = 0.8) +
+  scale_x_date(date_breaks = "2 years", date_labels = "%Y") +
+  labs(
+    title = "Precio mayorista total de la electricidad (€/MWh, 2010–2024)",
+    x = "Fecha", y = "€/MWh"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold", hjust = 0.5))
+
+ggplot(data, aes(x = fecha, y = precio_gas_natural_mwh)) +
+  add_event_bands() +
+  geom_line(color = "darkgreen", linewidth = 0.8) +
+  scale_x_date(date_breaks = "2 years", date_labels = "%Y") +
+  labs(
+    title = "Precio del gas natural en España (€/mwh, 2010–2024)",
+    x = "Fecha", y = "€/mwh"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold", hjust = 0.5))
+
+p_precio <- plot_ts(data, "precio_total_eur_mwh", "Precio mayorista de la electricidad (€/MWh)", "€/MWh")
+p_precio_gas <- plot_ts(data, "precio_gas_natural_mwh", "Precio mayorista del gas (€/mwh)", "€/mwh")
+p_log_precio <- plot_ts(data, "log_precio_total_eur_mwh", "Logaritmo del precio eléctrico", "log(€/MWh)")
+p_log_precio_gas <- plot_ts(data, "log_precio_gas_eur_mwh", "Logaritmo del precio del gas", "log(€/MWh)")
+p_energia <- plot_ts(data, "generacion_total", "Generación total (GWh)", "GWh")
+
+p_shares <- ggplot(data, aes(x = fecha)) +
+  geom_line(aes(y = share_renovables, colour = "Renovables")) +
+  geom_line(aes(y = share_fosiles, colour = "Fósiles")) +
+  scale_colour_manual(values = c("Renovables" = "blue", "Fósiles" = "red")) +
+  labs(
+    title = "Participación en el mix energético",
+    x = "Fecha", y = "Share", colour = "Tecnología"
+  ) +
+  theme_minimal()
+
+tec_cols <- c("hidraulica", "nuclear", "carbon", "ciclo_combinado", "eolica", "solar_fotovoltaica")
+
+data_long <- data_raw %>%
+  arrange(fecha) %>%
+  dplyr::mutate(gen_total_calc = rowSums(dplyr::across(all_of(tec_cols)), na.rm = TRUE)) %>%
+  dplyr::mutate(across(all_of(tec_cols), ~ .x / gen_total_calc, .names = "share_{.col}")) %>%
+  select(fecha, starts_with("share_")) %>%
+  pivot_longer(cols = starts_with("share_"), names_to = "tecnologia", values_to = "share") %>%
+  mutate(tecnologia = sub("share_", "", tecnologia))
+
+p_tecnologias <- ggplot(data_long, aes(x = fecha, y = share)) +
+  geom_line(linewidth = 0.7, colour = "steelblue") +
+  scale_y_continuous(labels = percent_format(accuracy = 1)) +
+  scale_x_date(date_breaks = "2 years", date_labels = "%Y") +
+  facet_wrap(~ tecnologia, ncol = 3) +
+  labs(
+    title = "Evolución del mix eléctrico por tecnología (2010–2024)",
+    x = "Fecha", y = "Participación (%)"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    strip.text = element_text(face = "bold"),
+    plot.title = element_text(face = "bold", hjust = 0.5)
+  )
+
+vars_corr <- c(
+  "log_precio_total_eur_mwh", "share_hidraulica", "share_nuclear", "share_carbon",
+  "share_ciclo_combinado", "share_eolica", "share_solar_fotovoltaica",
+  "ipc_general", "precio_gas_natural_mwh"
+)
+
+corr_data <- data %>%
+  select(any_of(vars_corr)) %>%
+  drop_na()
+
+if (ncol(corr_data) >= 2) {
+  print(cor(corr_data))
+  ggpairs(corr_data)
+}
+
+print(p_precio)
+print(p_precio_gas)
+print(p_log_precio)
+print(p_log_precio_gas)
+print(p_energia)
+print(p_shares)
+print(p_tecnologias)
+
+```
+```{r}
+# Librerías necesarias
+library(GGally)
+library(dplyr)
+
+
+vars_corr <- c(
+  "log_precio_total_eur_mwh", "share_hidraulica", "share_nuclear", "share_carbon",
+  "share_ciclo_combinado", "share_eolica", "share_solar_fotovoltaica",
+  "ipc_general", "precio_gas_natural_mwh"
+)
+
+
+corr_data <- data %>%
+  select(any_of(vars_corr)) %>%
+  drop_na()
+
+# Matriz de correlaciones + gráfico ggpairs
+if (ncol(corr_data) >= 2) {
+  print(round(cor(corr_data), 2))  # matriz de correlación redondeada
+  ggpairs(
+    corr_data,
+    title = "Matriz de correlaciones energéticas y de precios",
+    upper = list(continuous = wrap("cor", size = 3)),
+    lower = list(continuous = wrap("smooth", alpha = 0.3, size = 0.2)),
+    diag = list(continuous = wrap("densityDiag"))
+  ) +
+    theme_minimal(base_size = 10)
+} else {
+  message("No hay suficientes variables numéricas para el análisis de correlaciones.")
+}
+
+```
+
+#VAR-SVAR
+##Cointegrarion analysis
+```{r include=FALSE}
+data_grouped <- data |>
+  mutate(
+    renovables = share_hidraulica +
+                 share_eolica +
+                 share_solar_fotovoltaica +
+                 share_solar_termica +
+                 share_otras_renovables,
+    fosiles = share_carbon +
+              share_fuel_gas +
+              share_ciclo_combinado +
+              share_cogeneracion +
+              share_residuos_no_renovables
+  )
+
+var_group_names <- c(
+  "precio_total_eur_mwh",
+  "precio_gas_natural_mwh",
+  "renovables",
+  "fosiles",
+  "ipc_general"
+)
+
+stopifnot(all(var_group_names %in% names(data_grouped)))
+
+Yg_df <- data_grouped |>
+  arrange(fecha) |>
+  dplyr::select(all_of(var_group_names))
+
+Yg <- as.matrix(Yg_df)
+
+cat("\nVariables agregadas incluidas:\n")
+print(var_group_names)
+cat("\nN observaciones:", nrow(Yg_df), "\n\n")
+
+cat("### TESTS DE RAÍCES UNITARIAS (ADF y KPSS) – AGREGADOS ###\n")
+
+for (v in var_group_names) {
+  serie <- Yg_df[[v]]
+
+  cat("\n--------------------------\n")
+  cat("Variable:", v, "\n")
+
+  adf_drift <- ur.df(serie, type = "drift", lags = 12)
+  cat("\nADF (constante):\n")
+  print(summary(adf_drift))
+
+  adf_trend <- ur.df(serie, type = "trend", lags = 12)
+  cat("\nADF (tendencia):\n")
+  print(summary(adf_trend))
+
+  kpss_mu <- ur.kpss(serie, type = "mu", lags = "short")
+  cat("\nKPSS nivel:\n")
+  print(summary(kpss_mu))
+
+  kpss_tau <- ur.kpss(serie, type = "tau", lags = "short")
+  cat("\nKPSS tendencia:\n")
+  print(summary(kpss_tau))
+}
+
+cat("\n### SELECCIÓN DE RETARDOS (VARselect) – AGREGADOS ###\n")
+
+pmax <- 12
+
+lag_selection_g <- VARselect(
+  Yg,
+  lag.max = pmax,
+  type = "const"
+)
+
+print(lag_selection_g$selection)
+cat("\nCriterios completos:\n")
+print(lag_selection_g$criteria)
+
+cat("\n### TEST DE COINTEGRACIÓN DE JOHANSEN – AGREGADOS ###\n")
+
+K_diff <- 2
+
+jo_trace_g <- ca.jo(
+  Yg,
+  type = "trace",
+  ecdet = "const",
+  K = K_diff,
+  spec = "transitory"
+)
+
+cat("\nResumen test traza (agregados):\n")
+print(summary(jo_trace_g))
+
+jo_eigen_g <- ca.jo(
+  Yg,
+  type = "eigen",
+  ecdet = "const",
+  K = K_diff,
+  spec = "transitory"
+)
+
+cat("\nResumen test eigen (agregados):\n")
+print(summary(jo_eigen_g))
+
+dummies_mes <- model.matrix(~ month_factor, data = data_grouped)[ , -1]
+
+Xg <- cbind(
+  dummies_mes
+  ##crisis_gas        = data_grouped$crisis_gas,
+  ##guerra_ucrania    = data_grouped$guerra_ucrania,
+  #excepcion_iberica = data_grouped$excepcion_iberica,
+  ##covid             = data_grouped$covid
+)
+
+diagnostics_grouped <- list(
+  var_group_names   = var_group_names,
+  Yg                = Yg,
+  lag_selection_g   = lag_selection_g,
+  johansen_trace_g  = jo_trace_g,
+  johansen_eigen_g  = jo_eigen_g,
+  Xg                = Xg
+)
+
+```
+
+##VAR model
+```{r}
+lag_sel_g <- VARselect(Yg, lag.max = 12, type = "const")
+p_g <- lag_sel_g$selection[["HQ(n)"]]   # normalmente da 1 o 2
+```
+
+```{r}
+var_g <- VAR(Yg, p = 6, type = "const",exogen = Xg )
+```
+
+```{r}
+rottes<- vars::roots(var_g)
+
+roots_df <- data.frame(
+  real = Re(rottes),
+  imag = Im(rottes)
+)
+
+circle <- data.frame(
+  x = cos(seq(0, 2*pi, length.out = 500)),
+  y = sin(seq(0, 2*pi, length.out = 500))
+)
+
+p_roots <- ggplot() +
+  geom_path(data = circle, aes(x = x, y = y), color = "gray40", linewidth = 0.8) +
+  geom_point(data = roots_df, aes(x = real, y = imag),
+             color = "red", size = 3) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray60") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "gray60") +
+  coord_fixed() +
+  labs(
+    x = "Parte real",
+    y = "Parte imaginaria"
+  ) +
+  theme_minimal(base_size = 14)
+
+print(p_roots)
+```
+```{r}
+rottes
+```
+
+
+##SVAR Model: Choelsky Identification
+```{r}
+order_g <- c(
+  "precio_gas_natural_mwh",
+  "renovables",
+  "fosiles",
+  "precio_total_eur_mwh",
+  "ipc_general"
+)
+
+Yg_chol <- Yg_df[, order_g]
+
+varg_chol <- VAR(Yg_chol, p = p_g, type = "const", exogen = Xg)
+```
+
+
+```{r}
+set.seed(123)
+irf_g <- irf(
+  varg_chol,
+  impulse = colnames(Yg_chol),
+  response = colnames(Yg_chol),
+  n.ahead = 12,
+  ortho = TRUE,
+  boot = TRUE,
+  runs = 5000,
+  ci=0.95
+)
+```
+
+
+```{r}
+plot_irf_base <- function(irf_obj, shock_var) {
+
+  if (!(shock_var %in% names(irf_obj$irf))) stop("Shock no existe.")
+
+  irf_mat <- irf_obj$irf[[shock_var]]
+  low_mat <- irf_obj$Lower[[shock_var]]
+  up_mat  <- irf_obj$Upper[[shock_var]]
+
+  responses <- colnames(irf_mat)
+  n_resp <- length(responses)
+
+  ncol <- min(3, n_resp)
+  nrow <- ceiling(n_resp / ncol)
+
+  old_par <- par(no.readonly = TRUE)
+  on.exit(par(old_par))
+
+  par(mfrow = c(nrow, ncol), mar = c(4, 4, 3, 1))
+
+  for (resp in responses) {
+    ir <- irf_mat[, resp]
+    lo <- low_mat[, resp]
+    up <- up_mat[, resp]
+    h  <- 0:(length(ir) - 1)
+    ylim <- range(c(lo, up, ir), na.rm = TRUE)
+
+    plot(
+      h, ir, type = "l", lwd = 2, col = "black",
+      main = paste("Shock en", shock_var, "\nRespuesta:", resp),
+      xlab = "Horizonte (meses)", ylab = "IRF", ylim = ylim
+    )
+
+    polygon(
+      c(h, rev(h)),
+      c(lo, rev(up)),
+      col = rgb(0.3, 0.3, 0.3, 0.25),
+      border = NA
+    )
+
+    abline(h = 0, col = "gray40", lty = 2)
+  }
+
+  invisible(NULL)
+}
+
+plot_irf_base(irf_g, "precio_gas_natural_mwh")
+plot_irf_base(irf_g, "fosiles")
+plot_irf_base(irf_g, "renovables")
+plot_irf_base(irf_g, "precio_total_eur_mwh")
+plot_irf_base(irf_g, "ipc_general")
+```
+
+
+```{r}
+fevd_g <- fevd(varg_chol, n.ahead = 24)
+
+plot_fevd <- function(fevd_obj) {
+  df <- purrr::map_dfr(names(fevd_obj), function(var) {
+    mat <- fevd_obj[[var]]
+    as.data.frame(mat) |>
+      mutate(
+        horizon = 1:nrow(mat),
+        variable = var
+      )
+  }) |>
+    pivot_longer(
+      cols = -c(horizon, variable),
+      names_to = "shock",
+      values_to = "value"
+    )
+
+  ggplot(df, aes(x = horizon, y = value, fill = shock)) +
+    geom_area(position = "stack") +
+    facet_wrap(~variable, scales = "free_y") +
+    theme_minimal(base_size = 14) +
+    scale_fill_brewer(palette = "Set2") +
+    labs(
+      title = "FEVD (Cholesky)",
+      x = "Horizonte",
+      y = "Contribución (%)"
+    )
+}
+
+plot_fevd(fevd_g)
+
+```
+
+##Forecasting
+```{r}
+data_grouped <- data_grouped |> arrange(fecha)
+
+train <- data_grouped |> filter(year(fecha) <= 2023)
+test  <- data_grouped |> filter(year(fecha) == 2024)
+
+var_names <- c(
+  "precio_gas_natural_mwh",
+  "renovables",
+  "fosiles",
+  "precio_total_eur_mwh",
+  "ipc_general"
+)
+
+Y_train <- train |> dplyr::select(all_of(var_names)) |> as.matrix()
+Y_test  <- test  |> dplyr::select(all_of(var_names)) |> as.matrix()
+
+# ============================
+# 2. Exogenous 
+# ============================
+
+d_train <- model.matrix(~ month_factor, data = train)[ , -1]
+d_test  <- model.matrix(~ month_factor, data = test)[ , -1]
+
+X_train <- cbind(
+  d_train
+  #crisis_gas        = train$crisis_gas,
+  #guerra_ucrania    = train$guerra_ucrania,
+  #excepcion_iberica = train$excepcion_iberica
+  ##covid             = train$covid
+)
+
+X_test <- cbind(
+  d_test
+  #crisis_gas        = test$crisis_gas,
+  #guerra_ucrania    = test$guerra_ucrania,
+  #excepcion_iberica = test$excepcion_iberica
+  #covid             = test$covid
+)
+
+# ============================
+# 3.  lag +  VAR
+# ============================
+
+lags <- VARselect(Y_train, lag.max = 12, type = "const", exogen = X_train)
+p_f<- lags$selection[["HQ(n)"]]
+
+var_fit <- VAR(Y_train, p = 6, type = "const", exogen = X_train)
+
+# ============================
+# 4. Forecast 2024
+# ============================
+
+fc <- predict(var_fit, n.ahead = nrow(test), dumvar = X_test)
+
+# Convert to matrix
+fc_mean <- do.call(cbind, lapply(fc$fcst, function(x) x[,"fcst"]))
+fc_low  <- do.call(cbind, lapply(fc$fcst, function(x) x[,"lower"]))
+fc_up   <- do.call(cbind, lapply(fc$fcst, function(x) x[,"upper"]))
+
+colnames(fc_mean) <- paste0(var_names, ".fc_mean")
+colnames(fc_low)  <- paste0(var_names, ".fc_low")
+colnames(fc_up)   <- paste0(var_names, ".fc_up")
+
+
+pred_df <- data.frame(
+  fecha = test$fecha,
+  fc_mean,
+  fc_low,
+  fc_up
+)
+
+# ============================
+# 5. Errores MAPE + RMSE
+# ============================
+
+errors <- data.frame(
+  variable = var_names,
+  RMSE = sapply(var_names, function(v) rmse(test[[v]], pred_df[[paste0(v, ".fc_mean")]])),
+  MAPE = sapply(var_names, function(v) mape(test[[v]], pred_df[[paste0(v, ".fc_mean")]]))
+)
+
+print(errors)
+```
+
+```{r}
+plot_fan <- function(var) {
+
+  fc_mean <- paste0(var, ".fc_mean")
+  fc_low  <- paste0(var, ".fc_low")
+  fc_up   <- paste0(var, ".fc_up")
+
+  ggplot(pred_df, aes(x = fecha)) +
+    geom_ribbon(
+      aes(ymin = .data[[fc_low]], ymax = .data[[fc_up]]),
+      fill = "#A6CEE3", alpha = 0.35
+    ) +
+    geom_line(aes(y = .data[[fc_mean]]), color = "#1F78B4", linewidth = 1.1) +
+    geom_line(data = test, aes(y = .data[[var]]), color = "black", linewidth = 0.9) +
+    theme_minimal(base_size = 14) +
+    labs(
+      title = paste("Forecast", var, "(2024)"),
+      x = "", y = ""
+    ) +
+    theme(plot.title = element_text(face = "bold"))
+}
+
+for (v in var_names) {
+  print(plot_fan(v))
+}
+
+
+```
+
+
+
+```{r}
+plot_history_forecast <- function(var) {
+
+  fc_mean <- paste0(var, ".fc_mean")
+
+  ggplot() +
+    # Histórico completo
+    geom_line(data = data_grouped, aes(x = fecha, y = .data[[var]]),
+              color = "gray30", linewidth = 0.8) +
+
+    # Forecast media
+    geom_line(data = pred_df, aes(x = fecha, y = .data[[fc_mean]]),
+              color = "#1F78B4", linewidth = 1.2) +
+
+    # Observado 2024
+    geom_line(data = test, aes(x = fecha, y = .data[[var]]),
+              color = "black", linewidth = 1.0) +
+
+    theme_minimal(base_size = 14) +
+    labs(
+      title = paste("Serie histórica + Forecast de", var),
+      x = "", y = ""
+    ) +
+    theme(plot.title = element_text(face = "bold"))
+}
+
+for (v in var_names) {
+  print(plot_history_forecast(v))
+}
+
+
+```
+
+
+
+```{r}
+for (v in var_names) {
+  p1 <- plot_fan(v)
+  p2 <- plot_history_forecast(v)
+
+  print(p1 / p2 + plot_annotation(title = paste("Análisis gráfico de", v)))
+}
+
+```
+
+
+#ML: XGBoost for TS
+```{r}
+# =======================================================================================
+# 1. FUNCIONES AUXILIARES
+# =======================================================================================
+
+make_lags <- function(df, vars, L = 12){
+  for(v in vars){
+    if (!v %in% names(df)) next
+    for(l in 1:L){
+      df[[paste0(v, "_lag", l)]] <- dplyr::lag(df[[v]], l)
+    }
+  }
+  df
+}
+
+rmse <- function(a,p){ sqrt(mean((a-p)^2, na.rm=TRUE)) }
+mape <- function(a,p){ mean(abs((a-p)/a), na.rm=TRUE) * 100 }
+
+safe_predict <- function(model, newdata){
+  suppressWarnings(predict(model, newdata = as.data.frame(newdata)))
+}
+
+# =======================================================================================
+# 2. VARIABLES DEL MODELO
+# =======================================================================================
+
+share_cols <- grep("^share_", names(data), value = TRUE)
+
+control_cols <- c("crisis_gas","guerra_ucrania","covid","excepcion_iberica")
+
+target_price <- "precio_total_eur_mwh"
+target_ipc   <- "ipc_general"
+
+data_base <- data %>% arrange(fecha)
+
+if ("month_factor" %in% names(data_base)){
+  data_base <- data_base %>% mutate(month_factor = as.numeric(month_factor))
+}
+```
+
+## Modelo de Precio de la Electricidad
+```{r}
+price_feats_base <- c(
+  share_cols,
+  "precio_gas_natural_mwh",
+  control_cols,
+  "month_factor"
+)
+
+lag_vars_price <- c(
+  target_price,
+  target_ipc,
+  share_cols,
+  "precio_gas_natural_mwh",
+  control_cols
+)
+
+dat_price <- data_base %>%
+  dplyr::select(fecha, all_of(c(target_price, price_feats_base))) %>%
+  make_lags(lag_vars_price, 12) %>%
+  drop_na()
+
+cutoff_date <- as.Date("2023-12-01")
+train_price <- dat_price %>% filter(fecha <= cutoff_date)
+test_price  <- dat_price %>% filter(fecha >  cutoff_date)
+
+x_price_cols <- setdiff(names(train_price), c("fecha", target_price))
+
+x_price_train <- as.matrix(train_price[, x_price_cols])
+y_price_train <- train_price[[target_price]]
+
+x_price_test  <- as.matrix(test_price[, x_price_cols])
+y_price_test  <- test_price[[target_price]]
+
+cat("Train:", nrow(x_price_train),"   Test:", nrow(x_price_test),"\n")
+```
+
+
+```{r}
+# =======================================================================================
+# 4. ENTRENAMIENTO ROLLING WINDOW (PRECIO)
+# =======================================================================================
+
+n_train <- nrow(train_price)
+
+slices <- createTimeSlices(
+  1:n_train,
+  initialWindow = floor(0.6*n_train),
+  horizon       = floor(0.2*n_train),
+  fixedWindow   = TRUE
+)
+
+ctrl_price <- trainControl(
+  method        = "cv",
+  index         = slices$train,
+  indexOut      = slices$test,
+  allowParallel = TRUE
+)
+
+grid_price <- expand.grid(
+  nrounds          = c(150,300),
+  max_depth        = c(2,3),
+  eta              = c(0.05,0.1),
+  gamma            = 0,
+  colsample_bytree = c(0.7,0.9),
+  min_child_weight = c(1,3),
+  subsample        = c(0.7,0.9)
+)
+
+cl <- makeCluster(max(1,detectCores()-1))
+registerDoParallel(cl)
+
+set.seed(123)
+fit_price <- caret::train(
+  x = x_price_train,
+  y = y_price_train,
+  method    = "xgbTree",
+  trControl = ctrl_price,
+  tuneGrid  = grid_price,
+  metric    = "RMSE",
+  
+)
+
+stopCluster(cl)
+registerDoSEQ()
+
+fit_price
+```
+
+
+```{r}
+pred_price_test <- predict(fit_price, x_price_test)
+
+rmse_price <- rmse(y_price_test, pred_price_test)
+mape_price <- mape(y_price_test, pred_price_test)
+
+metrics_price <- data.frame(variable="precio_total_eur_mwh",
+                            RMSE=rmse_price,
+                            MAPE=mape_price)
+metrics_price
+
+# Fan chart
+pred_train <- predict(fit_price, x_price_train)
+sigma_price <- sd(y_price_train - pred_train)
+
+fan_price <- test_price %>%
+  dplyr::select(fecha, precio_total_eur_mwh) %>%
+  mutate(
+    fc_mean = pred_price_test,
+    fc_low  = fc_mean - 1.64*sigma_price,
+    fc_up   = fc_mean + 1.64*sigma_price
+  )
+```
+
+### Forecast
+
+
+
+```{r}
+ggplot(fan_price, aes(x = fecha)) +
+  geom_ribbon(aes(ymin = fc_low, ymax = fc_up), alpha = 0.18) +
+  geom_line(aes(y = fc_mean), linewidth = 0.95, color = "blue") +
+  geom_line(aes(y = precio_total_eur_mwh), linewidth = 0.8,
+            color = "black", linetype = "dashed") +
+  labs( title    = "Forecast del precio eléctrico (ML: XGBoost)",
+    x        = NULL,
+    y        = "€/MWh",
+    caption  = "Negro (— —): observado · Azul: media predicha · Banda: ±1.64·σ)",
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    panel.grid.minor = element_blank(),
+    legend.position = "none",
+    plot.caption = element_text(size = 9)
+  )
+
+
+```
+
+
+```{r}
+ggplot() +
+  
+ 
+  geom_line(
+    data = data_grouped %>% filter(fecha >= as.Date("2020-01-01")), 
+    aes(x = fecha, y = precio_total_eur_mwh),
+    color = "black", linewidth = 0.8
+  ) +
+  
+  geom_ribbon(
+    data = fan_price,
+    aes(x = fecha, ymin = fc_low, ymax = fc_up),
+    fill = "skyblue", alpha = 0.35
+  ) +
+  
+  geom_line(
+    data = fan_price,
+    aes(x = fecha, y = fc_mean),
+    color = "blue", linewidth = 1.1
+  ) +
+  
+  theme_minimal(base_size = 14) +
+  labs(
+    title   = "Precio total electricidad — Histórico + Forecast 2024",
+    y       = "€/MWh",
+    x       = "",
+    caption = "Serie negra: observado 2020–2024 | Azul: forecast" 
+  ) +
+  theme(
+    plot.title = element_text(face = "bold")
+  )
+
+```
+
+### PDP & ICE 
+
+```{r warning=FALSE}
+
+##############################################
+
+# X_train usado durante el fit
+X_interpret <- as.data.frame(x_price_train)
+colnames(X_interpret) <- colnames(x_price_train)     # asegurar nombres idénticos
+y_interpret <- y_price_train
+
+# Predictor seguro para IML
+pred_price_iml <- iml::Predictor$new(
+  fit_price,
+  data = X_interpret,
+  y    = y_interpret,
+  predict.function = safe_predict
+)
+
+
+##############################################
+# 2) Variables
+##############################################
+
+vars_plot <- c(
+  "share_hidraulica","share_nuclear","share_carbon","share_fuel_gas",
+  "share_ciclo_combinado","share_eolica","share_solar_fotovoltaica",
+  "share_solar_termica","share_otras_renovables","share_cogeneracion",
+  "share_residuos_no_renovables","share_residuos_renovables",
+  "share_renovables","share_fosiles",
+
+  "precio_gas_natural_mwh",
+  "crisis_gas","guerra_ucrania","covid","excepcion_iberica",
+  "month_factor",
+
+  "share_fosiles_lag1","share_fosiles_lag2",
+  "share_renovables_lag1","share_renovables_lag2",
+
+  "precio_gas_natural_mwh_lag1","precio_gas_natural_mwh_lag2",
+  "precio_total_eur_mwh_lag1","precio_total_eur_mwh_lag2"
+)
+
+# Mantener solo las que están EN x_price_train
+vars_plot <- intersect(vars_plot, colnames(X_interpret))
+
+
+##############################################
+# 3) IMPORTANCIA — FeatureImp
+##############################################
+
+imp_price <- iml::FeatureImp$new(
+  pred_price_iml,
+  loss = "rmse"
+)
+
+imp_df <- imp_price$results %>%
+  dplyr::filter(feature %in% vars_plot) %>%   # FILTRAR SOLO TUS VARIABLES
+  dplyr::mutate(importance_norm = importance / max(importance))
+```
+
+
+```{r}
+ggplot(imp_df %>% dplyr::slice_max(importance, n = 28),
+       aes(x = reorder(feature, importance_norm),
+           y = importance_norm)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  theme_minimal(base_size = 13) +
+  labs(
+    x = NULL, y = "Importancia normalizada"
+  )
+```
+
+
+```{r}
+plot_pdp_pct1 <- function(v, model_iml, data_full, target_name) {
+
+  message("Generando PDP/ICE (%): ", v)
+
+  # --- calcular efecto marginal ---
+  eff <- iml::FeatureEffect$new(
+    model_iml,
+    feature   = v,
+    method    = "pdp+ice",
+    grid.size = 30
+  )
+
+  df <- eff$results
+  
+  # Asegurar columna con predicciones
+  ycol <- intersect(colnames(df), c("yhat","prediction",".value","response"))[1]
+
+  if (!(".id" %in% colnames(df))) {
+    df$.id <- rep(seq_len(nrow(df) / length(unique(df[[v]]))),
+                  each = length(unique(df[[v]])))
+  }
+
+  # Precio base: promedio real
+  base_price <- mean(data_full[[target_name]], na.rm = TRUE)
+
+  # Convertir a % de cambio
+  df$y_pct <- 100 * (df[[ycol]] - base_price) / base_price
+
+  # PDP
+  pdp_df <- df %>%
+    dplyr::group_by(.data[[v]]) %>%
+    dplyr::summarise(y_pct = mean(y_pct))
+
+  ggplot(df, aes(x = .data[[v]], y = y_pct)) +
+    geom_line(aes(group = .id), alpha = 0.15, color = "grey50") +   # ICE
+    geom_line(data = pdp_df, color = "#E69F00", linewidth = 1.4) +  # PDP
+    coord_cartesian(ylim = c(-10, 10)) + 
+    labs(
+      title = paste0("Efecto marginal (%): ", v),
+      x = v,
+      y = "% cambio en precio predicho"
+    ) +
+    theme_minimal(base_size = 14) +
+    theme(
+      plot.title = element_text(face = "bold"),
+      panel.grid.minor = element_blank()
+    )
+}
+
+plot_pdp_pct2 <- function(v, model_iml, data_full, target_name) {
+
+  message("Generando PDP/ICE (%): ", v)
+
+  # --- calcular efecto marginal ---
+  eff <- iml::FeatureEffect$new(
+    model_iml,
+    feature   = v,
+    method    = "pdp+ice",
+    grid.size = 30
+  )
+
+  df <- eff$results
+  
+
+  ycol <- intersect(colnames(df), c("yhat","prediction",".value","response"))[1]
+
+  if (!(".id" %in% colnames(df))) {
+    df$.id <- rep(seq_len(nrow(df) / length(unique(df[[v]]))),
+                  each = length(unique(df[[v]])))
+  }
+
+  # Precio base: promedio real
+  base_price <- mean(data_full[[target_name]], na.rm = TRUE)
+
+  # Convertir a % de cambio
+  df$y_pct <- 100 * (df[[ycol]] - base_price) / base_price
+
+  # PDP
+  pdp_df <- df %>%
+    dplyr::group_by(.data[[v]]) %>%
+    dplyr::summarise(y_pct = mean(y_pct))
+
+  ggplot(df, aes(x = .data[[v]], y = y_pct)) +
+    geom_line(aes(group = .id), alpha = 0.15, color = "grey50") +   # ICE
+    geom_line(data = pdp_df, color = "#E69F00", linewidth = 1.4) +  # PDP
+    labs(
+      title = paste0("Efecto marginal (%): ", v),
+      subtitle = "ICE (gris) y PDP (línea amarilla)",
+      x = v,
+      y = "% cambio en precio predicho"
+    ) +
+    theme_minimal(base_size = 14) +
+    theme(
+      plot.title = element_text(face = "bold"),
+      panel.grid.minor = element_blank()
+    )
+}
+```
+
+```{r}
+vars_to_plot1 <- c( "share_fosiles", "share_nuclear", "share_carbon", "share_fuel_gas",
+  "share_ciclo_combinado", "share_cogeneracion","share_residuos_no_renovables")
+  
+  vars_to_plot2 <- c("share_renovables", "share_hidraulica", "share_eolica", "share_solar_fotovoltaica",
+  "share_solar_termica", "share_otras_renovables", 
+   "share_residuos_renovables"
+)
+  
+  vars_to_plot3 <- c(
+  "precio_gas_natural_mwh",
+  "precio_gas_natural_mwh_lag1", "precio_gas_natural_mwh_lag2",
+  "precio_total_eur_mwh_lag1", "precio_total_eur_mwh_lag2"
+)
+
+```
+
+
+```{r, fig.width=12, fig.height=8, dpi=200}
+library(patchwork)
+library(ggplot2)
+library(scales)
+library(stringr)
+
+vars_all <- vars_to_plot1
+
+plots_pdp <- lapply(vars_all, function(v){
+
+  if (!v %in% colnames(X_ipc_interpret)) {
+    message("Variable no usada por IPC: ", v)
+    return(NULL)
+  }
+
+  p <- plot_pdp_pct1(
+  v           = v,
+    model_iml   = pred_price_iml,
+    data_full   = dat_price,
+    target_name = target_price
+  ) +
+    coord_cartesian(ylim = c(-5, 5)) +
+    labs(
+      title = str_replace(v, "^share_", ""),  # título corto
+      x = NULL, y = NULL
+    ) +
+    scale_x_continuous(labels = label_number(accuracy = 0.01)) +
+    theme_minimal(base_size = 9) +
+    theme(
+      legend.position = "none",
+      plot.title = element_text(size = 9, face = "bold", hjust = 0.5),
+      axis.text  = element_text(size = 7),
+      plot.margin = margin(6, 6, 6, 6)
+    )
+
+  p
+})
+
+plots_pdp <- Filter(Negate(is.null), plots_pdp)
+
+p_grid <- wrap_plots(plots_pdp, ncol = 3) + 
+  plot_annotation(title = "% de cambio predicho en precio - Efectos marginales: PDP (amarillo) / ICE (gris)" ) &
+  theme(plot.title = element_text(hjust = 0.5))
+
+p_grid
+
+```
+
+
+```{r, fig.width=12, fig.height=8, dpi=200}
+library(patchwork)
+library(ggplot2)
+library(scales)
+library(stringr)
+
+vars_all <- vars_to_plot2
+
+plots_pdp <- lapply(vars_all, function(v){
+
+  if (!v %in% colnames(X_ipc_interpret)) {
+    message("Variable no usada por IPC: ", v)
+    return(NULL)
+  }
+
+  p <- plot_pdp_pct1(
+  v           = v,
+    model_iml   = pred_price_iml,
+    data_full   = dat_price,
+    target_name = target_price
+  ) +
+    coord_cartesian(ylim = c(-5, 5)) +
+    labs(
+      title = str_replace(v, "^share_", ""),  # título corto
+      x = NULL, y = NULL
+    ) +
+    scale_x_continuous(labels = label_number(accuracy = 0.01)) +
+    theme_minimal(base_size = 9) +
+    theme(
+      legend.position = "none",
+      plot.title = element_text(size = 9, face = "bold", hjust = 0.5),
+      axis.text  = element_text(size = 7),
+      plot.margin = margin(6, 6, 6, 6)
+    )
+
+  p
+})
+
+plots_pdp <- Filter(Negate(is.null), plots_pdp)
+
+p_grid <- wrap_plots(plots_pdp, ncol = 3) + 
+  plot_annotation(title = "% de cambio predicho en precio - Efectos marginales: PDP (amarillo) / ICE (gris)" ) &
+  theme(plot.title = element_text(hjust = 0.5))
+
+p_grid
+```
+
+
+```{r, fig.width=12, fig.height=8, dpi=200}
+library(patchwork)
+library(ggplot2)
+library(scales)
+library(stringr)
+
+vars_all <- vars_to_plot3
+
+plots_pdp <- lapply(vars_all, function(v){
+
+  if (!v %in% colnames(X_ipc_interpret)) {
+    message("Variable no usada por IPC: ", v)
+    return(NULL)
+  }
+
+  p <- plot_pdp_pct2(
+  v           = v,
+    model_iml   = pred_price_iml,
+    data_full   = dat_price,
+    target_name = target_price
+  ) +
+    labs(
+      title = str_replace(v, "^share_", ""),  # título corto
+      x = NULL, y = NULL
+    ) +
+    scale_x_continuous(labels = label_number(accuracy = 0.01)) +
+    theme_minimal(base_size = 9) +
+    theme(
+      legend.position = "none",
+      plot.title = element_text(size = 9, face = "bold", hjust = 0.5),
+      axis.text  = element_text(size = 7),
+      plot.margin = margin(6, 6, 6, 6)
+    )
+
+  p
+})
+
+plots_pdp <- Filter(Negate(is.null), plots_pdp)
+
+p_grid <- wrap_plots(plots_pdp, ncol = 3) + 
+  plot_annotation(title = "% de cambio predicho en precio - Efectos marginales: PDP (amarillo) / ICE (gris)" ) &
+  theme(plot.title = element_text(hjust = 0.5))
+
+p_grid
+
+```
+
+
+
+## Modelo de IPC
+```{r}
+ipc_feats_base <- c(
+  share_cols,
+  "precio_gas_natural_mwh",
+  control_cols,
+  "month_factor"
+)
+
+lag_vars_ipc <- c(
+  target_ipc,
+  target_price,
+  share_cols,
+  "precio_gas_natural_mwh",
+  control_cols
+)
+
+dat_ipc <- data_base %>%
+  dplyr::select(fecha, all_of(c(target_ipc, ipc_feats_base, target_price))) %>%
+  make_lags(lag_vars_ipc, 12) %>%
+  drop_na()
+
+train_ipc <- dat_ipc %>% filter(fecha <= cutoff_date)
+test_ipc  <- dat_ipc %>% filter(fecha >  cutoff_date)
+
+x_ipc_cols <- setdiff(names(train_ipc), c("fecha", target_ipc))
+
+# X matrices
+x_ipc_train <- as.matrix(train_ipc[, x_ipc_cols])
+x_ipc_test  <- as.matrix(test_ipc[, x_ipc_cols])
+
+# Y vectores 
+y_ipc_train <- train_ipc[[target_ipc]]
+y_ipc_test  <- test_ipc[[target_ipc]]
+
+# Rolling window IPC
+slices_ipc <- createTimeSlices(
+  1:nrow(train_ipc),
+  initialWindow = floor(0.6*nrow(train_ipc)),
+  horizon       = floor(0.2*nrow(train_ipc)),
+  fixedWindow   = TRUE
+)
+
+ctrl_ipc <- trainControl(
+  method="cv",
+  index=slices_ipc$train,
+  indexOut=slices_ipc$test,
+  allowParallel=TRUE
+)
+
+grid_ipc <- grid_price
+
+cl2 <- makeCluster(max(1,detectCores()-1))
+registerDoParallel(cl2)
+
+set.seed(123)
+fit_ipc <- caret::train(
+  x = x_ipc_train,
+  y = y_ipc_train,
+  method="xgbTree",
+  trControl = ctrl_ipc,
+  tuneGrid  = grid_ipc,
+  metric    = "RMSE"
+)
+
+stopCluster(cl2)
+registerDoSEQ()
+
+pred_ipc_test <- predict(fit_ipc, x_ipc_test)
+
+metrics_ipc <- data.frame(
+  variable="ipc_general",
+  RMSE = rmse(y_ipc_test, pred_ipc_test),
+  MAPE = mape(y_ipc_test, pred_ipc_test)
+)
+
+metrics_ipc
+
+```
+
+###Forecast
+```{r}
+# Residuales en train para sigma IPC
+pred_ipc_train <- predict(fit_ipc, x_ipc_train)
+res_ipc_train  <- y_ipc_train - pred_ipc_train
+sigma_ipc      <- sd(res_ipc_train, na.rm = TRUE)
+
+fan_ipc <- test_ipc %>%
+  dplyr::select(fecha, ipc_general) %>%
+  mutate(
+    fc_mean = pred_ipc_test,
+    fc_low  = fc_mean - 1.64 * sigma_ipc,
+    fc_up   = fc_mean + 1.64 * sigma_ipc
+  )
+
+ggplot(fan_ipc, aes(x = fecha)) +
+  geom_ribbon(aes(ymin = fc_low, ymax = fc_up), alpha = 0.18) +
+  geom_line(aes(y = fc_mean), linewidth = 0.95, color = "blue") +
+  geom_line(aes(y = ipc_general), linewidth = 0.8,
+            color = "black", linetype = "dashed") +
+  labs(
+    title   = "Forecast del IPC (ML: XGBoost)",
+    x       = NULL,
+    y       = "IPC % (índice)",
+    caption = "Negro (— —): observado · Azul: media predicha · Banda: ±1.64·σ"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    panel.grid.minor = element_blank(),
+    legend.position = "none",
+    plot.caption = element_text(size = 9)
+  )
+
+
+
+```
+
+
+###PDP & ICE
+```{r}
+##############################################
+# 1) Preparar datos 
+##############################################
+
+X_ipc_interpret <- as.data.frame(x_ipc_train)
+colnames(X_ipc_interpret) <- colnames(x_ipc_train) 
+y_ipc_interpret <- y_ipc_train
+
+pred_ipc_iml <- iml::Predictor$new(
+  fit_ipc,
+  data = X_ipc_interpret,
+  y    = y_ipc_interpret,
+  predict.function = safe_predict
+)
+
+```
+
+```{r}
+##############################################
+# 2) Variables
+##############################################
+
+vars_ipc_plot <- c(
+  # Mix energético
+  "share_hidraulica","share_nuclear","share_carbon","share_fuel_gas",
+  "share_ciclo_combinado","share_eolica","share_solar_fotovoltaica",
+  "share_solar_termica","share_otras_renovables","share_cogeneracion",
+  "share_residuos_no_renovables","share_residuos_renovables",
+  "share_renovables","share_fosiles",
+
+  # Variables clave/externas
+  "precio_gas_natural_mwh",
+  "crisis_gas","guerra_ucrania","covid","excepcion_iberica",
+  "month_factor", "precio_total_eur_mwh",
+
+  # Lags permitidos
+  "share_fosiles_lag1","share_fosiles_lag2",
+  "share_renovables_lag1","share_renovables_lag2",
+
+  "precio_gas_natural_mwh_lag1","precio_gas_natural_mwh_lag2",
+  "precio_total_eur_mwh_lag1","precio_total_eur_mwh_lag2"
+)
+
+# Filtramos solo los usados REALMENTE por el modelo IPC
+vars_ipc_plot <- intersect(vars_ipc_plot, colnames(X_ipc_interpret))
+
+```
+
+```{r}
+##############################################
+# 3) IMPORTANCIA — FeatureImp IPC
+##############################################
+
+imp_ipc <- iml::FeatureImp$new(
+  pred_ipc_iml,
+  loss = "rmse"
+)
+
+imp_ipc_df <- imp_ipc$results %>%
+  dplyr::filter(feature %in% vars_ipc_plot) %>%
+  dplyr::mutate(importance_norm = importance / max(importance))
+```
+
+
+```{r}
+# Plot
+ggplot(imp_ipc_df %>% slice_max(importance, n = 28),
+       aes(x = reorder(feature, importance_norm),
+           y = importance_norm)) +
+  geom_col(fill = "darkorange") +
+  coord_flip() +
+  theme_minimal(base_size = 13) +
+  labs(    x = NULL, y = "Importancia normalizada"
+  )
+
+```
+```{r}
+##############################################
+# PDP en % — MIX ENERGÉTICO y EVENTOS (IPC)
+##############################################
+
+vars_ipc_to_plot1_f <- c(
+  "share_fosiles","share_nuclear","share_carbon","share_fuel_gas",
+  "share_ciclo_combinado",
+  "share_residuos_no_renovables"
+)
+
+
+vars_ipc_to_plot1_r <- c(
+  "share_renovables", "share_hidraulica", "share_eolica",
+  "share_solar_fotovoltaica", "share_solar_termica","share_otras_renovables",
+  "share_cogeneracion", "share_residuos_renovables"
+)
+
+vars_ipc_to_plot2 <- c(
+  "precio_gas_natural_mwh", "precio_total_eur_mwh",
+  "precio_gas_natural_mwh_lag1", "precio_gas_natural_mwh_lag2",
+  "precio_total_eur_mwh_lag1",   "precio_total_eur_mwh_lag2"
+)
+```
+
+
+```{r, fig.width=12, fig.height=8, dpi=200}
+library(patchwork)
+library(ggplot2)
+library(scales)
+library(stringr)
+
+vars_all <- vars_ipc_to_plot1_f
+
+plots_pdp <- lapply(vars_all, function(v){
+
+  if (!v %in% colnames(X_ipc_interpret)) {
+    message("Variable no usada por IPC: ", v)
+    return(NULL)
+  }
+
+  p <- plot_pdp_pct1(
+    v           = v,
+    model_iml   = pred_ipc_iml,
+    data_full   = dat_ipc,
+    target_name = target_ipc
+  ) +
+    coord_cartesian(ylim = c(-5, 5)) +
+    labs(
+      title = str_replace(v, "^share_", ""),  # título corto
+      x = NULL, y = NULL
+    ) +
+    scale_x_continuous(labels = label_number(accuracy = 0.01)) +
+    theme_minimal(base_size = 9) +
+    theme(
+      legend.position = "none",
+      plot.title = element_text(size = 9, face = "bold", hjust = 0.5),
+      axis.text  = element_text(size = 7),
+      plot.margin = margin(6, 6, 6, 6)
+    )
+
+  p
+})
+
+plots_pdp <- Filter(Negate(is.null), plots_pdp)
+
+p_grid <- wrap_plots(plots_pdp, ncol = 3) +   
+  plot_annotation(title = "% de cambio predicho en IPC - Efectos marginales: PDP (amarillo) / ICE (gris)" ) &
+  theme(plot.title = element_text(hjust = 0.5))
+
+p_grid
+
+```
+
+
+```{r, fig.width=12, fig.height=8, dpi=200}
+library(patchwork)
+library(ggplot2)
+library(scales)
+library(stringr)
+
+vars_all <- vars_ipc_to_plot1_r
+
+plots_pdp <- lapply(vars_all, function(v){
+
+  if (!v %in% colnames(X_ipc_interpret)) {
+    message("Variable no usada por IPC: ", v)
+    return(NULL)
+  }
+
+  p <- plot_pdp_pct1(
+    v           = v,
+    model_iml   = pred_ipc_iml,
+    data_full   = dat_ipc,
+    target_name = target_ipc
+  ) +
+    coord_cartesian(ylim = c(-5, 5)) +
+    labs(
+      title = str_replace(v, "^share_", ""),  # título corto
+      x = NULL, y = NULL
+    ) +
+    scale_x_continuous(labels = label_number(accuracy = 0.01)) +
+    theme_minimal(base_size = 9) +
+    theme(
+      legend.position = "none",
+      plot.title = element_text(size = 9, face = "bold", hjust = 0.5),
+      axis.text  = element_text(size = 7),
+      plot.margin = margin(6, 6, 6, 6)
+    )
+
+  p
+})
+
+plots_pdp <- Filter(Negate(is.null), plots_pdp)
+
+p_grid <- wrap_plots(plots_pdp, ncol = 3) +   
+  plot_annotation(title = "% de cambio predicho en IPC - Efectos marginales: PDP (amarillo) / ICE (gris)" ) &
+  theme(plot.title = element_text(hjust = 0.5))
+
+p_grid
+
+```
+
+
+```{r, fig.width=12, fig.height=8, dpi=200}
+library(patchwork)
+library(ggplot2)
+library(scales)
+library(stringr)
+
+vars_all <- vars_ipc_to_plot2
+
+plots_pdp <- lapply(vars_all, function(v){
+
+  if (!v %in% colnames(X_ipc_interpret)) {
+    message("Variable no usada por IPC: ", v)
+    return(NULL)
+  }
+
+  p <- plot_pdp_pct2(
+    v           = v,
+    model_iml   = pred_ipc_iml,
+    data_full   = dat_ipc,
+    target_name = target_ipc
+  ) +
+    coord_cartesian(ylim = c(-50, 150)) +
+    labs(
+      title = str_replace(v, "^share_", ""),  # título corto
+      x = NULL, y = NULL
+    ) +
+    scale_x_continuous(labels = label_number(accuracy = 0.01)) +
+    theme_minimal(base_size = 9) +
+    theme(
+      legend.position = "none",
+      plot.title = element_text(size = 9, face = "bold", hjust = 0.5),
+      axis.text  = element_text(size = 7),
+      plot.margin = margin(6, 6, 6, 6)
+    )
+
+  p
+})
+
+plots_pdp <- Filter(Negate(is.null), plots_pdp)
+
+p_grid <- wrap_plots(plots_pdp, ncol = 3) +  
+  plot_annotation(title = "% de cambio predicho en IPC - Efectos marginales: PDP (amarillo) / ICE (gris)" ) &
+  theme(plot.title = element_text(hjust = 0.5))
+
+p_grid
+```
+
+
+
+
+
