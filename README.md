@@ -18,9 +18,13 @@ and consumer inflation (IPC) and producer prices (IPRI).
 data/       monthly datasets (data.csv, cleaned and transformed versions, variable descriptions)
 scripts/    01_load_clean_data.R, 02_exploratory_analysis.R, 03_correlation_pca.R
 analysis/   tfm_all.Rmd – full VAR/SVAR + XGBoost analysis
+report/     thesis.pdf (full thesis) and defense_slides.pdf
 figures/    model figures (IRF, FEVD, fan charts, PDPs)
 output/     EDA and PCA tables and plots
 ```
+
+## Reading the results
+The full thesis (`report/thesis.pdf`, in Spanish) explains the motivation and conclusions. The PCA and clustering in `output/` summarise how the generation mix evolves over time. The VAR/SVAR impulse responses in `figures/res/` show how a shock to one variable (for example gas generation or wholesale price) propagates to the others, including inflation. The XGBoost fan charts compare forecasts for 2024 with observed values.
 
 ## How to run
 Run from the repository root in R:
@@ -34,8 +38,7 @@ Main packages: tidyverse, lubridate, janitor, zoo, tseries, urca, vars, FactoMin
 
 ## Data
 Monthly electricity generation by technology, wholesale electricity prices and
-INE consumer price indices. The raw hourly price files are not included because of their size.
-Check the original providers' terms of use before reusing the data.
+INE consumer price indices. The exact download sources are not recorded in the repository, so check the original providers' terms of use before reusing the data. The raw hourly price files are not included because of their size.
 
 ## Author
 Mohammed Essabaouni
